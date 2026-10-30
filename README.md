@@ -6,11 +6,27 @@
 
 > 本项目只做**本机模拟器调试**。能做什么、不能做什么，见下方「能力边界」，请先读完再动手。
 
+> **本仓库是修改版，不是原作者仓库。**
+>
+> - 原作者：**erzhuzi486**
+> - 作者 GitHub：<https://github.com/erzhuzi486>
+> - 原项目：<https://github.com/erzhuzi486/campus-run-assistant>
+> - 抖音参考/演示视频：<https://www.douyin.com/video/7701967479221110181>
+>
+> 本仓库在原项目基础上做了两处本地化修改：定位中心改为河北大学五四路校区北院田径场；`run_gui.py` 增加非匀速配速曲线。原作者未参与本仓库修改，原项目的 MIT 许可证与版权声明继续保留。
+
+### 本仓库修改
+
+- 定位：河北大学五四路校区北院田径场（WGS-84 `38.873108, 115.512785`）
+- 配速：1 Hz 非匀速，平均约 `5'30"/km`，前段热身、途中起伏、后段轻微提速
+- 改动文件：`run_gui.py`
+- `doctor.py` 的验收阈值未修改
+
 ---
 
 ## 一句话部署（把这句话原样丢给 AI）
 
-> **帮我部署这个仓库：https://github.com/erzhuzi486/campus-run-assistant**
+> **帮我部署这个仓库：https://github.com/ZPZJZY/campus-run-assistant-hbu**
 > **先读 AGENTS.md，按里面的步骤执行，直到 `python doctor.py` 全绿。**
 > **需要我手动操作的（在雷电里选摄像头）再停下来问我。**
 

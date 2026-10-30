@@ -39,3 +39,8 @@ ldplayer9box/
 *.vdi.bak
 *.ova
 ldinst_*.exe
+
+# ---- 业务 App（124 MB，超过 GitHub 单文件限制）----
+# 请从原作者 Releases 获取：
+# https://github.com/erzhuzi486/campus-run-assistant/releases/download/apk-v1.1.23/joyrun_v1.1.23.apk
+joyrun_*.apk

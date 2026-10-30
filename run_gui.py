@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """校园跑 · 一键投喂器（精美版）
 
-东1田径场 · 第3道 · 3 圈 · 1 Hz
+河北大学北院田径场 · 第3道 · 3 圈 · 1 Hz
 跑完或手动停止后可选择：原地停 / 回到起点
 """
 import math
 import os
 import queue
+import random
 import shutil
 import subprocess
 import threading
@@ -96,7 +97,8 @@ LDCONSOLE, LDCONSOLE_STATE = _pick_ldconsole()
 INDEX = "0"
 FISH_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fish.png")
 
-CENTER_LAT, CENTER_LNG = 39.203921, 118.595184
+# 河北大学五四路校区北院田径场（WGS-84；对应高德 GCJ-02 115.518920, 38.873870）
+CENTER_LAT, CENTER_LNG = 38.873108, 115.512785
 LANE_R = 40.2
 STRAIGHT = 84.39
 LAPS = 3
@@ -146,9 +148,74 @@ def to_geo(u, v):
     return CENTER_LAT + u / 111320.0, CENTER_LNG + v / KF
 
 
-N_PTS = int(round(TOTAL_M / SPEED * HZ))
-ROUTE = [(i * SPEED / HZ,) + to_geo(*route_point(i * SPEED / HZ)) for i in range(N_PTS)]
+def smoothstep(x):
+    x = max(0.0, min(1.0, x))
+    return x * x * (3.0 - 2.0 * x)
+
+
+def build_route(seed=None):
+    """生成带人类配速波动的三圈路线，每个采样点间隔 1 秒。
+
+    前 35 秒热身，随后有低频起伏和相关的随机漂移，
+    最后 4% 距离轻微提速；整体平均配速仍按 PACE_SEC 校准。
+    """
+    if seed is None:
+        seed = time.time_ns()
+    target_speed = SPEED
+
+    def once(base_speed):
+        rng = random.Random(seed)
+        noise = 0.0
+        s = 0.0
+        t = 0.0
+        route = [(0.0,) + to_geo(*route_point(0.0))]
+        dists = [0.0]
+        speeds = [max(2.4, min(3.8, base_speed * 0.93))]
+        while s < TOTAL_M - 1e-9:
+            u = min(1.0, s / TOTAL_M)
+            factor = 1.0
+            if t < 35.0:
+                factor *= 0.93 + 0.07 * smoothstep(t / 35.0)
+            factor *= 1.0 - 0.025 * u
+            factor *= (1.0 + 0.012 * math.sin(2.0 * math.pi * (t / 95.0) + 0.7)
+                       + 0.007 * math.sin(2.0 * math.pi * (t / 31.0) + 1.9))
+            noise += (-noise / 14.0) + 0.010 * rng.gauss(0.0, 1.0)
+            noise = max(-0.04, min(0.04, noise))
+            factor *= 1.0 + noise
+            if u > 0.96:
+                factor *= 1.0 + 0.04 * smoothstep((u - 0.96) / 0.04)
+            v = max(2.4, min(3.8, base_speed * factor))
+            step = min(v / HZ, TOTAL_M - s)
+            s += step
+            t += step / v
+            route.append((t,) + to_geo(*route_point(s)))
+            dists.append(s)
+            speeds.append(v)
+        return route, dists, speeds, t
+
+    # 用同一随机种子反复校准平均速度，保留曲线形状
+    base = target_speed
+    for _ in range(3):
+        route, dists, speeds, total_t = once(base)
+        avg_speed = TOTAL_M / total_t if total_t > 0 else target_speed
+        base *= target_speed / avg_speed
+    route, dists, speeds, total_t = once(base)
+    return route, dists, speeds, total_t
+
+
+ROUTE, ROUTE_DIST, ROUTE_SPEED, TOTAL_SEC = build_route()
 START_LAT, START_LNG = ROUTE[0][1], ROUTE[0][2]
+
+
+def distance_at(idx):
+    """把秒索引换算成累计距离，支持小数索引。"""
+    if not ROUTE_DIST:
+        return 0.0
+    i = max(0, min(len(ROUTE_DIST) - 1, int(idx)))
+    if i >= len(ROUTE_DIST) - 1:
+        return ROUTE_DIST[-1]
+    f = max(0.0, min(1.0, idx - i))
+    return ROUTE_DIST[i] + (ROUTE_DIST[i + 1] - ROUTE_DIST[i]) * f
 
 
 def stadium(r, n=88):
@@ -318,21 +385,21 @@ class MapView(tk.Canvas):
         cv.create_line(sx + L100, sy - 4, sx + L100, sy + 4, fill=MUTED, width=2)
         cv.create_text(sx + L100 / 2, sy - 12, text="100 m", fill=MUTED, font=("Consolas", 9))
 
-        cv.create_text(18, 20, text="东1田径场 · 第3道", anchor="w",
+        cv.create_text(18, 20, text="河北大学北院田径场 · 第3道", anchor="w",
                        fill=TEXT, font=("Microsoft YaHei", 11, "bold"))
 
     def draw_dynamic(self, idx_float, trail_idx=None):
         cv = self
         cv.delete("dyn")
         # 拖尾
-        n = len(ROUTE)
+        n = len(ROUTE_DIST)
         start = max(0, int(idx_float) - 46)
         pts = []
         for i in range(start, min(n, int(idx_float) + 1)):
-            u, v = route_point(i * SPEED)
+            u, v = route_point(ROUTE_DIST[i])
             x, y = self.px(u, v)
             pts += [x, y]
-        xu, xv = route_point(idx_float * SPEED)
+        xu, xv = route_point(distance_at(idx_float))
         fx, fy = self.px(xu, xv)
         pts += [fx, fy]
         if len(pts) >= 4:
@@ -345,9 +412,9 @@ class MapView(tk.Canvas):
 
         # 航向
         i0 = max(0, int(idx_float) - 1)
-        i1 = min(len(ROUTE) - 1, i0 + 1)
-        ua, va = route_point(i0 * SPEED)
-        ub, vb = route_point(i1 * SPEED)
+        i1 = min(n - 1, i0 + 1)
+        ua, va = route_point(ROUTE_DIST[i0])
+        ub, vb = route_point(ROUTE_DIST[i1])
         dx = (vb - va) * self.s
         dy = -(ub - ua) * self.s
         ang = math.degrees(math.atan2(dy, dx))
@@ -444,6 +511,8 @@ class App:
         self.root.after(100, self.drain)
         self.root.after(33, self.tick)
         self.w("就绪：起点 = 终点 = %.6f, %.6f" % (START_LAT, START_LNG))
+        self.w("配速：非匀速（热身/起伏/后程提速），平均 %d'%02d\"/km"
+               % (PACE_SEC // 60, PACE_SEC % 60))
         self.w("鱼素材：" + ("已载入 fish.png" if self.map.sprite.ok else "未找到 fish.png，使用手绘矢量鱼"))
 
     def w(self, msg):
@@ -469,15 +538,19 @@ class App:
         else:
             idx = self.frozen_idx
         self.map.draw_dynamic(idx)
-        dist = min(TOTAL_M, idx * SPEED)
+        dist = min(TOTAL_M, distance_at(idx))
         self.v_dist.set("%.0f" % dist)
-        sec = int(idx * SPEED / SPEED)
+        sec = int(idx / HZ)
         self.v_time.set("%02d:%02d" % (sec // 60, sec % 60))
-        if dist > 25:
-            self.v_pace.set("%d'%02d\"" % (PACE_SEC // 60, PACE_SEC % 60))
+        if dist > 25 and ROUTE_SPEED:
+            si = max(0, min(len(ROUTE_SPEED) - 1, int(idx)))
+            v = ROUTE_SPEED[si]
+            if v > 0:
+                pace = int(round(1000.0 / v))
+                self.v_pace.set("%d'%02d\"" % (pace // 60, pace % 60))
         lap = min(LAPS, int(dist / PER) + (1 if dist < TOTAL_M - 0.5 else 0))
         self.lbl_lap.config(text="第 %d / %d 圈" % (lap, LAPS))
-        self.bar_fg.place_configure(relwidth=min(1.0, idx / max(1, len(ROUTE) - 1)))
+        self.bar_fg.place_configure(relwidth=min(1.0, idx / max(1, len(ROUTE_DIST) - 1)))
         self.root.after(33, self.tick)
 
     def park(self):
@@ -488,14 +561,24 @@ class App:
             self.w("回起点失败: %s" % e)
 
     def start(self):
+        global ROUTE, ROUTE_DIST, ROUTE_SPEED, TOTAL_SEC
         if self.worker and self.worker.is_alive():
             return
+        # 每次开跑重新生成配速曲线，避免每次轨迹完全一样
+        ROUTE, ROUTE_DIST, ROUTE_SPEED, TOTAL_SEC = build_route()
         self.stop_flag.clear()
         self.running = True
         self.t0 = time.monotonic()
         self.frozen_idx = 0.0
         self.btn_run.config(state="disabled", bg="#15803d")
         self.btn_stop.config(state="normal")
+        paces = [1000.0 / v for v in ROUTE_SPEED if v > 0]
+        if paces:
+            pmin, pmax = int(round(min(paces))), int(round(max(paces)))
+            avg = int(round(TOTAL_SEC / (TOTAL_M / 1000.0)))
+            self.w("配速：%d'%02d\"–%d'%02d\"/km，平均 %d'%02d\"/km（非匀速）"
+                   % (pmin // 60, pmin % 60, pmax // 60, pmax % 60,
+                      avg // 60, avg % 60))
         self.worker = threading.Thread(target=self.run_route, daemon=True)
         self.worker.start()
 
@@ -507,7 +590,10 @@ class App:
         self.w("收到停止指令…")
 
     def run_route(self):
-        self.w("开始：%d 点 / %.0f m" % (len(ROUTE), TOTAL_M))
+        route = ROUTE
+        avg = int(round(TOTAL_SEC / (TOTAL_M / 1000.0)))
+        self.w("开始：%d 点 / %.0f m / 平均 %d'%02d\"/km"
+               % (len(route), TOTAL_M, avg // 60, avg % 60))
         ok = 0
         finished = False
         try:
@@ -515,16 +601,22 @@ class App:
             time.sleep(0.8)
         except Exception as e:
             self.w("起点定位失败: %s" % e)
-        for i in range(len(ROUTE)):
+        next_tick = time.monotonic()
+        for i, p in enumerate(route):
             if self.stop_flag.is_set():
                 self.w("手动停止，已投喂 %d 点" % i)
                 break
             try:
-                locate(ROUTE[i][1], ROUTE[i][2])
+                locate(p[1], p[2])
                 ok += 1
             except Exception as e:
                 self.w("第 %d 点失败: %s" % (i, e))
-            time.sleep(0.76)
+            next_tick += 1.0 / HZ
+            wait = next_tick - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            elif wait < -1.0:
+                next_tick = time.monotonic()
         else:
             finished = True
             self.w("完成：%d 点 / %.0f m" % (ok, TOTAL_M))
